@@ -9,15 +9,15 @@ Simply type `aalap` to enter an elegant, interactive terminal session with Claud
 
 ## ✨ Features
 
-- 🎨 **Beautiful Interactive CLI** - Clean, intuitive interface with ASCII art
-- 💬 **Conversational Context** - Maintains conversation history throughout sessions
-- 🔧 **MCP Server Support** - Install and manage Model Context Protocol servers
-- 📝 **Command History** - Navigate previous commands with arrow keys
-- ⚡ **Quick Commands** - Slash commands for easy control
-- 🔄 **Pipe Support** - Works seamlessly with Unix pipes and streams
-- 💾 **Persistent Config** - Saves your preferences and API keys securely
+-  **Beautiful Interactive CLI** - Clean, intuitive interface with ASCII art
+-  **Conversational Context** - Maintains conversation history throughout sessions
+-  **MCP Server Support** - Install and manage Model Context Protocol servers
+-  **Command History** - Navigate previous commands with arrow keys
+-  **Quick Commands** - Slash commands for easy control
+-  **Pipe Support** - Works seamlessly with Unix pipes and streams
+-  **Persistent Config** - Saves your preferences and API keys securely
 
-## 🚀 Installation
+##  Installation
 
 ### Homebrew (Recommended for macOS/Linux)
 
@@ -63,7 +63,7 @@ pip install -e .
 python setup.py install
 ```
 
-## 📖 Quick Start
+##  Quick Start
 
 ### 1. Get Your API Key
 
@@ -93,7 +93,7 @@ Type /help for commands or start chatting!
 💬 You: 
 ```
 
-## 💡 Usage
+##  Usage
 
 ### Interactive Mode (Default)
 
@@ -189,7 +189,7 @@ aalap config --model claude-sonnet-4-20250514
 aalap config --max-tokens 8192
 ```
 
-## 🛠️ MCP Server Management
+##  MCP Server Management
 
 Model Context Protocol (MCP) servers extend Claude's capabilities with tools and data sources.
 
@@ -236,7 +236,7 @@ aalap mcp remove filesystem
 💬 You: /mcp remove filesystem
 ```
 
-## 💡 Examples
+##  Examples
 
 ### Basic Conversation
 
@@ -315,7 +315,7 @@ cat myfile.py | aalap chat "Review this code for security vulnerabilities"
 ls -la | aalap chat "Explain these file permissions"
 ```
 
-## 📁 Configuration Files
+##  Configuration Files
 
 Aalap stores its configuration in `~/.aalap/`:
 
@@ -349,7 +349,7 @@ Aalap stores its configuration in `~/.aalap/`:
 }
 ```
 
-## 🎯 Tips & Best Practices
+##  Tips & Best Practices
 
 1. **Use Interactive Mode for Conversations** - Maintain context across multiple questions
 2. **Clear Context When Switching Topics** - Use `/clear` for fresh starts
@@ -370,7 +370,7 @@ ask "How do I sort a dictionary in Python?"
 ai  # Launch interactive mode
 ```
 
-## 🔒 Security
+##  Security
 
 - API keys are stored in `~/.aalap/config.json`
 - Recommended permissions: `chmod 600 ~/.aalap/config.json`
@@ -378,7 +378,7 @@ ai  # Launch interactive mode
 - Use environment variables for CI/CD: `export ANTHROPIC_API_KEY=xxx`
 - Consider using a secrets manager for production environments
 
-## 🔄 Updating
+##  Updating
 
 ### Homebrew
 
@@ -392,7 +392,7 @@ brew upgrade aalap
 pip install --upgrade git+https://github.com/caltycs/aalap
 ```
 
-## 🐛 Troubleshooting
+##  Troubleshooting
 
 ### Command Not Found
 
@@ -448,7 +448,7 @@ python3.11 -m pip install git+https://github.com/caltycs/aalap
 pip install gnureadline
 ```
 
-## 🗑️ Uninstallation
+##  Uninstallation
 
 ### Homebrew
 
@@ -469,7 +469,7 @@ pip uninstall aalap-cli
 rm -rf ~/.aalap
 ```
 
-## 🏗️ Development
+##  Development
 
 ### Setting Up Development Environment
 
@@ -515,14 +515,14 @@ python -m build
 twine check dist/*
 ```
 
-## 📚 Resources
+##  Resources
 
 - [Anthropic Documentation](https://docs.anthropic.com)
 - [Claude API Reference](https://docs.anthropic.com/en/api)
 - [MCP Documentation](https://modelcontextprotocol.io)
 - [Python Anthropic SDK](https://github.com/anthropics/anthropic-sdk-python)
 
-## 🗺️ Roadmap
+##  Roadmap
 
 - [x] Interactive CLI with conversation context
 - [x] MCP server management
@@ -537,38 +537,17 @@ twine check dist/*
 - [ ] Image input support
 - [ ] Token usage tracking and statistics
 
-## 🤝 Contributing
 
-Contributions are welcome! Please feel free to submit a Pull Request.
-
-1. Fork the repository
-2. Create your feature branch (`git checkout -b feature/AmazingFeature`)
-3. Commit your changes (`git commit -m 'Add some AmazingFeature'`)
-4. Push to the branch (`git push origin feature/AmazingFeature`)
-5. Open a Pull Request
-
-### Development Guidelines
-
-- Follow PEP 8 style guidelines
-- Add tests for new features
-- Update documentation as needed
-- Keep commits atomic and well-described
-
-## 📄 License
+##  License
 
 This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
 
-## 🎵 About the Name
+##  About the Name
 
 **Aalap**  is a term from Indian classical music referring to the opening section of a performance—a slow, improvised exploration that sets the mood and introduces the raga. Just like a musical aalap, this CLI is your opening conversation with AI, setting the stage for deeper exploration and creative dialogue.
 
-## 🙏 Acknowledgments
 
-- Built with the [Anthropic Python SDK](https://github.com/anthropics/anthropic-sdk-python)
-- Inspired by the Model Context Protocol (MCP)
-- Thanks to the open-source community
-
-## 📞 Support
+##  Support
 
 - **Issues**: [GitHub Issues](https://github.com/caltycs/aalap/issues)
 - **Discussions**: [GitHub Discussions](https://github.com/caltycs/aalapp/discussions)
@@ -589,4 +568,3 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 ---
 
-⭐ **Star this repo if you find it useful!** ⭐
