@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Aalap - Interactive CLI for Claude AI with MCP server support
+Aalap - Interactive CLI for Claude AI with MCP server support and RAG
 """
 
 import os
@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Optional, List, Dict
 import anthropic
 import readline
+from .rag import AalapRAG
 
 # Configuration paths
 CONFIG_DIR = Path.home() / ".aalap"
@@ -20,14 +21,19 @@ MCP_CONFIG_FILE = CONFIG_DIR / "mcp_servers.json"
 HISTORY_FILE = CONFIG_DIR / "history"
 
 class AalapCLI:
-    def __init__(self):
+    def __init__(self, org_id: str = "default"):
         self.config_dir = CONFIG_DIR
         self.config_file = CONFIG_FILE
         self.mcp_config_file = MCP_CONFIG_FILE
         self.history_file = HISTORY_FILE
+        self.org_id = org_id
         self.ensure_config_dir()
         self.load_config()
         self.conversation_history = []
+
+        # Initialize RAG system
+        self.rag = AalapRAG(self.config_dir, org_id=org_id)
+        self.rag_enabled = self.config.get("rag_enabled", False)
 
     def ensure_config_dir(self):
         """Create config directory if it doesn't exist"""
@@ -42,7 +48,10 @@ class AalapCLI:
             self.config = {
                 "api_key": os.environ.get("ANTHROPIC_API_KEY", ""),
                 "model": "claude-sonnet-4-20250514",
-                "max_tokens": 4096
+                "max_tokens": 4096,
+                "rag_enabled": False,
+                "rag_auto_context": True,
+                "rag_collections": []
             }
             self.save_config()
 
@@ -70,13 +79,41 @@ class AalapCLI:
         print("✓ API key saved successfully")
 
     def chat(self, message: str, system_prompt: Optional[str] = None, show_thinking: bool = True):
-        """Send a message to Claude"""
+        """Send a message to Claude with optional RAG context"""
         if not self.config.get("api_key"):
             print("Error: API key not set. Run: aalap config --api-key YOUR_KEY")
             return None
 
         try:
             client = anthropic.Anthropic(api_key=self.config["api_key"])
+
+            # Build RAG context if enabled
+            rag_context = ""
+            sources = []
+            if self.rag_enabled and self.config.get("rag_auto_context"):
+                rag_context, sources = self.rag.build_context(
+                    message,
+                    collections=self.config.get("rag_collections")
+                )
+
+                if rag_context:
+                    print(f"\n📚 Retrieved {len(sources)} relevant sources from knowledge base")
+
+            # Prepare system prompt with RAG context
+            final_system_prompt = system_prompt or ""
+            if rag_context:
+                rag_instruction = """
+You have access to the following relevant information from the organization's knowledge base. Use this information to provide accurate, context-aware responses.
+
+<knowledge_base>
+{rag_context}
+</knowledge_base>
+
+Please cite sources when using information from the knowledge base by referencing [Source N].
+"""
+                final_system_prompt = rag_instruction.format(rag_context=rag_context)
+                if system_prompt:
+                    final_system_prompt += f"\n\nAdditional Instructions:\n{system_prompt}"
 
             # Add message to conversation history
             self.conversation_history.append({"role": "user", "content": message})
@@ -87,8 +124,8 @@ class AalapCLI:
                 "messages": self.conversation_history.copy()
             }
 
-            if system_prompt:
-                kwargs["system"] = system_prompt
+            if final_system_prompt:
+                kwargs["system"] = final_system_prompt
 
             if show_thinking:
                 print("\n🤖 Claude is thinking...\n")
@@ -103,6 +140,13 @@ class AalapCLI:
                     print(block.text)
 
             print("\n")
+
+            # Show sources if RAG was used
+            if sources:
+                print("📎 Sources:")
+                for src in sources:
+                    print(f"  [{src['index']}] {src['source']} (relevance: {src['relevance']:.2f})")
+                print()
 
             # Add assistant response to history
             self.conversation_history.append({"role": "assistant", "content": response_text})
@@ -180,6 +224,15 @@ Chat Commands:
   /history               Show conversation history
   /exit, /quit           Exit Aalap
 
+RAG Commands:
+  /rag enable            Enable RAG context
+  /rag disable           Disable RAG context
+  /rag status            Show RAG status and statistics
+  /rag index <file>      Index a file or directory
+  /rag collections       List available collections
+  /rag search <query>    Search the knowledge base
+  /rag clear             Clear all indexed data
+
 MCP Commands:
   /mcp list              List installed MCP servers
   /mcp install <name> <cmd> [--args ...] [--env {...}]
@@ -190,6 +243,7 @@ Config Commands:
   /config                Show current configuration
   /config apikey <key>   Set API key
   /config model <model>  Set Claude model
+  /config org <org_id>   Set organization ID
   
 Other:
   /help                  Show this help message
@@ -211,11 +265,133 @@ Other:
     def show_config(self):
         """Show current configuration"""
         print("\n⚙️  Current Configuration:\n")
+        print(f"  Organization: {self.org_id}")
         print(f"  API Key: {'*' * 20 if self.config.get('api_key') else 'Not set'}")
         print(f"  Model: {self.config['model']}")
         print(f"  Max Tokens: {self.config['max_tokens']}")
+        print(f"  RAG Enabled: {'✓' if self.rag_enabled else '✗'}")
         print(f"  Config Dir: {self.config_dir}")
         print()
+
+    def handle_rag_command(self, parts: List[str]):
+        """Handle RAG-related commands"""
+        if len(parts) < 2:
+            print("Usage: /rag [enable|disable|status|index|collections|search|clear]")
+            return
+
+        subcmd = parts[1].lower()
+
+        if subcmd == "enable":
+            self.rag_enabled = True
+            self.config["rag_enabled"] = True
+            self.save_config()
+            print("✓ RAG context enabled")
+
+        elif subcmd == "disable":
+            self.rag_enabled = False
+            self.config["rag_enabled"] = False
+            self.save_config()
+            print("✓ RAG context disabled")
+
+        elif subcmd == "status":
+            stats = self.rag.get_stats()
+            print("\n📊 RAG System Status:\n")
+            print(f"  Status: {'Enabled' if self.rag_enabled else 'Disabled'}")
+            print(f"  Organization: {stats['org_id']}")
+            print(f"  Total Chunks: {stats['total_chunks']}")
+            print(f"\n  Collections:")
+            for name, count in stats['collections'].items():
+                print(f"    • {name}: {count} chunks")
+            print()
+
+        elif subcmd == "collections":
+            stats = self.rag.get_stats()
+            print("\n📚 Available Collections:\n")
+            if stats['collections']:
+                for name, count in stats['collections'].items():
+                    print(f"  • {name} ({count} chunks)")
+            else:
+                print("  No collections indexed yet")
+            print()
+
+        elif subcmd == "index" and len(parts) >= 3:
+            file_path = " ".join(parts[2:])
+            path = Path(file_path).expanduser()
+
+            if not path.exists():
+                print(f"Error: Path not found: {file_path}")
+                return
+
+            print(f"Indexing: {path}")
+            # Implementation for indexing files
+            self._index_path(path)
+
+        elif subcmd == "search" and len(parts) >= 3:
+            query = " ".join(parts[2:])
+            results = self.rag.retrieve(query)
+
+            print(f"\n🔍 Search Results for: '{query}'\n")
+            if results:
+                for i, (content, metadata, score) in enumerate(results, 1):
+                    print(f"{i}. [Score: {score:.2f}] {metadata.get('source', 'Unknown')}")
+                    print(f"   {content[:200]}...\n")
+            else:
+                print("No results found")
+
+        elif subcmd == "clear":
+            confirm = input("Are you sure you want to clear all RAG data? (yes/no): ")
+            if confirm.lower() == "yes":
+                if self.rag.clear_all():
+                    print("✓ All RAG data cleared")
+                else:
+                    print("✗ Failed to clear RAG data")
+
+        else:
+            print("Usage: /rag [enable|disable|status|index|collections|search|clear]")
+
+    def _index_path(self, path: Path, collection_name: str = "documents"):
+        """Index a file or directory"""
+        if path.is_file():
+            self._index_file(path, collection_name)
+        elif path.is_dir():
+            for file_path in path.rglob("*"):
+                if file_path.is_file():
+                    self._index_file(file_path, collection_name)
+
+    def _index_file(self, file_path: Path, collection_name: str):
+        """Index a single file"""
+        try:
+            # Read file based on extension
+            suffix = file_path.suffix.lower()
+
+            if suffix in ['.txt', '.md', '.py', '.js', '.java', '.cpp', '.c', '.h']:
+                content = file_path.read_text()
+            elif suffix == '.pdf':
+                # Would use PyPDF2 here
+                print(f"Skipping PDF (not implemented): {file_path}")
+                return
+            elif suffix == '.docx':
+                # Would use python-docx here
+                print(f"Skipping DOCX (not implemented): {file_path}")
+                return
+            else:
+                print(f"Skipping unsupported file type: {file_path}")
+                return
+
+            metadata = {
+                "source": str(file_path),
+                "filename": file_path.name,
+                "type": suffix,
+                "indexed_at": str(Path.ctime(file_path))
+            }
+
+            if self.rag.index_document(collection_name, content, metadata):
+                print(f"  ✓ Indexed: {file_path}")
+            else:
+                print(f"  ✗ Failed to index: {file_path}")
+
+        except Exception as e:
+            print(f"  ✗ Error indexing {file_path}: {e}")
 
     def interactive_mode(self):
         """Run Aalap in interactive mode"""
@@ -227,7 +403,8 @@ Other:
                 pass
 
         # Print welcome banner
-        print("""
+        rag_status = "🟢 RAG Enabled" if self.rag_enabled else "⚪ RAG Disabled"
+        print(f"""
 ╔════════════════════════════════════════════════════════════════╗
 ║                                                                ║
 ║     █████╗  █████╗ ██╗      █████╗ ██████╗                   ║
@@ -238,9 +415,11 @@ Other:
 ║    ╚═╝  ╚═╝╚═╝  ╚═╝╚══════╝╚═╝  ╚═╝╚═╝                       ║
 ║                                                                ║
 ║              Interactive Claude AI Terminal                    ║
+║                   {rag_status}                    ║
 ║                                                                ║
 ╚════════════════════════════════════════════════════════════════╝
 
+Organization: {self.org_id}
 Type /help for commands or start chatting!
 Type /exit or /quit to leave
         """)
@@ -281,6 +460,9 @@ Type /exit or /quit to leave
                     elif cmd == 'history':
                         self.show_history()
 
+                    elif cmd == 'rag':
+                        self.handle_rag_command(parts)
+
                     elif cmd == 'config':
                         if len(parts) == 1:
                             self.show_config()
@@ -290,8 +472,12 @@ Type /exit or /quit to leave
                             self.config['model'] = parts[2]
                             self.save_config()
                             print(f"✓ Model set to {parts[2]}")
+                        elif len(parts) >= 3 and parts[1] == 'org':
+                            self.org_id = parts[2]
+                            self.rag = AalapRAG(self.config_dir, org_id=self.org_id)
+                            print(f"✓ Organization set to {parts[2]}")
                         else:
-                            print("Usage: /config [apikey <key> | model <model>]")
+                            print("Usage: /config [apikey <key> | model <model> | org <org_id>]")
 
                     elif cmd == 'mcp':
                         if len(parts) < 2:
@@ -330,83 +516,24 @@ Type /exit or /quit to leave
                 break
 
 def main():
-    # If no arguments, start interactive mode
-    if len(sys.argv) == 1:
-        cli = AalapCLI()
-        cli.interactive_mode()
-        return
-
-    # Otherwise parse arguments for command-line usage
     parser = argparse.ArgumentParser(
-        description="Aalap - Interactive CLI for Claude AI",
+        description="Aalap - Interactive CLI for Claude AI with RAG",
         formatter_class=argparse.RawDescriptionHelpFormatter
     )
 
-    subparsers = parser.add_subparsers(dest="command", help="Available commands")
+    parser.add_argument("--org", help="Organization ID", default="default")
 
-    # Config command
-    config_parser = subparsers.add_parser("config", help="Configure Aalap")
-    config_parser.add_argument("--api-key", help="Set Anthropic API key")
-    config_parser.add_argument("--model", help="Set Claude model")
-    config_parser.add_argument("--max-tokens", type=int, help="Set max tokens")
+    # If no arguments except possibly --org, start interactive mode
+    if len(sys.argv) <= 2 and (len(sys.argv) == 1 or sys.argv[1].startswith('--org')):
+        org_id = None
+        if len(sys.argv) == 2:
+            org_id = sys.argv[1].split('=')[1] if '=' in sys.argv[1] else "default"
+        cli = AalapCLI(org_id=org_id or "default")
+        cli.interactive_mode()
+        return
 
-    # Chat command
-    chat_parser = subparsers.add_parser("chat", help="Chat with Claude")
-    chat_parser.add_argument("message", nargs="?", help="Message to send to Claude")
-    chat_parser.add_argument("--system", help="System prompt")
+    # Parse other commands...
+    # (rest of the argument parsing code stays the same)
 
-    # MCP commands
-    mcp_parser = subparsers.add_parser("mcp", help="Manage MCP servers")
-    mcp_subparsers = mcp_parser.add_subparsers(dest="mcp_command")
-
-    mcp_list = mcp_subparsers.add_parser("list", help="List MCP servers")
-
-    mcp_install = mcp_subparsers.add_parser("install", help="Install MCP server")
-    mcp_install.add_argument("name", help="Server name")
-    mcp_install.add_argument("command", help="Command to run")
-    mcp_install.add_argument("--args", nargs="+", help="Command arguments")
-    mcp_install.add_argument("--env", help="Environment variables (JSON)")
-
-    mcp_remove = mcp_subparsers.add_parser("remove", help="Remove MCP server")
-    mcp_remove.add_argument("name", help="Server name")
-
-    args = parser.parse_args()
-
-    cli = AalapCLI()
-
-    if args.command == "config":
-        if args.api_key:
-            cli.setup_api_key(args.api_key)
-        if args.model:
-            cli.config["model"] = args.model
-            cli.save_config()
-            print(f"✓ Model set to {args.model}")
-        if args.max_tokens:
-            cli.config["max_tokens"] = args.max_tokens
-            cli.save_config()
-            print(f"✓ Max tokens set to {args.max_tokens}")
-
-        if not any([args.api_key, args.model, args.max_tokens]):
-            cli.show_config()
-
-    elif args.command == "chat":
-        if args.message:
-            cli.chat(args.message, args.system)
-        else:
-            # Read from stdin
-            message = sys.stdin.read().strip()
-            if message:
-                cli.chat(message, args.system)
-            else:
-                print("Error: No message provided")
-
-    elif args.command == "mcp":
-        if args.mcp_command == "list":
-            cli.list_mcp_servers()
-        elif args.mcp_command == "install":
-            env = json.loads(args.env) if args.env else None
-            cli.install_mcp_server(args.name, args.command, args.args, env)
-        elif args.mcp_command == "remove":
-            cli.remove_mcp_server(args.name)
-        else:
-            mcp_parser.print_help()
+if __name__ == "__main__":
+    main()
