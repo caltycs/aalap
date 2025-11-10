@@ -7,21 +7,28 @@ Aalap now supports Retrieval-Augmented Generation (RAG) for organization-specifi
 ## Architecture
 
 ```
-┌─────────────────────────────────────────────────────────┐
-│                    Aalap RAG System                     │
-├─────────────────────────────────────────────────────────┤
-│                                                         │
-│  User Query                                             │
-│      ↓                                                  │
-│  RAG Pipeline (Local)                                   │
-│      ↓                                                  │
-│  Vector Store (ChromaDB - Local & Persistent)          │
-│      ↓                                                  │
-│  Context Retrieval                                      │
-│      ↓                                                  │
-│  Claude API (with sanitized context)                    │
-│                                                         │
-└─────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────┐
+│                     Aalap with RAG                          │
+├─────────────────────────────────────────────────────────────┤
+│                                                             │
+│  User Query → RAG Pipeline → Context Retrieval → Claude    │
+│                    ↓                                        │
+│              Vector Store                                   │
+│              (Local/Private)                                │
+│                    ↓                                        │
+│         ┌──────────────────────┐                           │
+│         │   Data Sources via   │                           │
+│         │    MCP Servers       │                           │
+│         ├──────────────────────┤                           │
+│         │  • File Systems      │                           │
+│         │  • Databases         │                           │
+│         │  • Git Repos         │                           │
+│         │  • Confluence        │                           │
+│         │  • SharePoint        │                           │
+│         │  • Slack/Teams       │                           │
+│         └──────────────────────┘                           │
+│                                                             │
+└─────────────────────────────────────────────────────────────┘
 ```
 
 ## Key Features
