@@ -65,7 +65,7 @@ class AalapRAG:
         default_config = {
             "max_context_tokens": 3000,
             "top_k_results": 5,
-            "similarity_threshold": 0.3,
+            "similarity_threshold": 0.0,  # Lower threshold for better recall (was 0.2)
             "chunk_size": 500,
             "chunk_overlap": 50,
             "enabled_sources": [],
@@ -94,19 +94,23 @@ class AalapRAG:
 
     def create_collection(self, name: str, metadata: Dict = None) -> bool:
         """
-        Create a new collection for a data source
+            Create a new collection for a data source
 
-        Args:
-            name: Collection name (e.g., 'docs', 'code', 'confluence')
-            metadata: Additional metadata
+            Args:
+                name: Collection name (e.g., 'docs', 'code', 'confluence')
+                metadata: Additional metadata
 
-        Returns:
-            True if successful
-        """
+            Returns:
+                True if successful
+            """
         try:
+        # ChromaDB requires non-empty metadata
+            if not metadata:
+                metadata = {"description": f"Collection for {name}"}
+
             collection = self.chroma_client.create_collection(
                 name=name,
-                metadata=metadata or {}
+                metadata=metadata
             )
             self.collections[name] = collection
             return True
@@ -148,12 +152,87 @@ class AalapRAG:
 
         return chunks
 
+    def document_exists(
+            self,
+            collection_name: str,
+            doc_id: str
+    ) -> Tuple[bool, Optional[Dict]]:
+        """
+        Check if a document exists in a collection
+
+        Args:
+            collection_name: Collection to check
+            doc_id: Document ID to look for
+
+        Returns:
+            (exists, metadata) - metadata of first chunk if exists, else None
+        """
+        if collection_name not in self.collections:
+            return False, None
+
+        collection = self.collections[collection_name]
+
+        try:
+            # Try to get any chunk from this document
+            results = collection.get(
+                where={"doc_id": doc_id},
+                limit=1
+            )
+
+            if results and results['ids']:
+                # Document exists, return its metadata
+                return True, results['metadatas'][0]
+
+            return False, None
+
+        except Exception as e:
+            print(f"Error checking document existence: {e}")
+            return False, None
+
+    def delete_document(
+            self,
+            collection_name: str,
+            doc_id: str
+    ) -> bool:
+        """
+        Delete all chunks of a document from a collection
+
+        Args:
+            collection_name: Collection name
+            doc_id: Document ID to delete
+
+        Returns:
+            True if successful
+        """
+        if collection_name not in self.collections:
+            return False
+
+        collection = self.collections[collection_name]
+
+        try:
+            # Get all chunks with this doc_id
+            results = collection.get(
+                where={"doc_id": doc_id}
+            )
+
+            if results and results['ids']:
+                # Delete all chunks
+                collection.delete(ids=results['ids'])
+                return True
+
+            return True  # No chunks to delete is also success
+
+        except Exception as e:
+            print(f"Error deleting document: {e}")
+            return False
+
     def index_document(
             self,
             collection_name: str,
             content: str,
             metadata: Dict,
-            doc_id: Optional[str] = None
+            doc_id: Optional[str] = None,
+            update_if_exists: bool = True
     ) -> bool:
         """
         Index a document into a collection
@@ -162,26 +241,55 @@ class AalapRAG:
             collection_name: Target collection
             content: Document content
             metadata: Document metadata (source, title, date, etc.)
-            doc_id: Unique document ID
+            doc_id: Unique document ID (required for deduplication)
+            update_if_exists: If True, update existing document; if False, skip
 
         Returns:
             True if successful
         """
         if collection_name not in self.collections:
-            if not self.create_collection(collection_name):
+            # Create collection with default metadata
+            collection_metadata = {
+                "description": f"Collection for {collection_name}",
+                "created_at": datetime.now().isoformat()
+            }
+            if not self.create_collection(collection_name, collection_metadata):
                 return False
 
         collection = self.collections[collection_name]
 
         try:
+            # Generate doc_id if not provided (fallback for backward compatibility)
+            if not doc_id:
+                doc_id = f"{collection_name}_{datetime.now().timestamp()}"
+
+            # Check if document already exists
+            exists, old_metadata = self.document_exists(collection_name, doc_id)
+
+            if exists:
+                if not update_if_exists:
+                    # Skip indexing if document exists and we're not updating
+                    return True
+
+                # Check if file has been modified (if metadata available)
+                if old_metadata and 'file_modified' in old_metadata and 'file_modified' in metadata:
+                    if old_metadata['file_modified'] == metadata['file_modified']:
+                        # File hasn't changed, skip re-indexing
+                        return True
+
+                # Delete old chunks before adding new ones
+                self.delete_document(collection_name, doc_id)
+
             # Chunk the content
             chunks = self.chunk_text(content)
+
+            if not chunks:
+                return False
 
             # Generate embeddings
             embeddings = self.embedding_model.encode(chunks).tolist()
 
             # Prepare IDs and metadata
-            doc_id = doc_id or f"{collection_name}_{datetime.now().timestamp()}"
             ids = [f"{doc_id}_chunk_{i}" for i in range(len(chunks))]
 
             # Add chunk index to metadata
@@ -270,16 +378,25 @@ class AalapRAG:
                 )
 
                 # Process results
+                filtered_count = 0
                 for i in range(len(results['documents'][0])):
                     content = results['documents'][0][i]
                     metadata = results['metadatas'][0][i]
                     distance = results['distances'][0][i]
 
                     # Convert distance to similarity score
-                    similarity = 1 - distance
+                    # ChromaDB uses L2 (squared euclidean) distance by default
+                    # We normalize it to a 0-1 similarity score
+                    # Smaller distance = higher similarity
+                    similarity = max(0.0, 1.0 - (distance / 2.0))
 
                     if similarity >= self.rag_config["similarity_threshold"]:
                         all_results.append((content, metadata, similarity))
+                    else:
+                        filtered_count += 1
+
+                if filtered_count > 0:
+                    print(f"   Note: {filtered_count} results filtered out (similarity < {self.rag_config['similarity_threshold']}, scores: {[max(0.0, 1.0 - (results['distances'][0][j] / 2.0)) for j in range(len(results['distances'][0]))]})")
 
             except Exception as e:
                 print(f"Error querying collection '{coll_name}': {e}")

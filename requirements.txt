@@ -1,1 +1,24 @@
 anthropic>=0.40.0
+
+# RAG Dependencies
+torch>=2.1.0                      # Python 3.13 compatible
+sentence-transformers>=2.7.0      # For embeddings
+chromadb>=0.4.24                  # Vector database
+langchain-core>=0.1.0             # Core abstractions
+langchain-community>=0.1.0        # Community integrations
+tiktoken>=0.7.0                   # Token counting
+pypdf>=4.0.0                      # PDF processing (NOT PyPDF2!)
+python-docx>=1.1.0                # Word doc processing
+markdown>=3.5.0                   # Markdown processing
+numpy>=1.24.0,<2.0.0
+
+# Alternative vector stores (choose based on need)
+# faiss-cpu>=1.7.4           # Facebook AI Similarity Search (faster)
+# qdrant-client>=1.7.0       # Qdrant (production-ready)
+# weaviate-client>=3.25.0    # Weaviate (enterprise)
+
+# Database drivers (optional - install as needed)
+# psycopg2-binary>=2.9.0     # PostgreSQL
+# mysql-connector-python>=8.0.0  # MySQL
+# For SQLite, use built-in sqlite3 module
+

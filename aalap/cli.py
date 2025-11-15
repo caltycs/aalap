@@ -13,6 +13,8 @@ from typing import Optional, List, Dict
 import anthropic
 import readline
 from .rag import AalapRAG
+from .database_rag import DatabaseRAG
+from .database_query import DatabaseQueryExecutor
 
 # Configuration paths
 CONFIG_DIR = Path.home() / ".aalap"
@@ -34,6 +36,13 @@ class AalapCLI:
         # Initialize RAG system
         self.rag = AalapRAG(self.config_dir, org_id=org_id)
         self.rag_enabled = self.config.get("rag_enabled", False)
+
+        # Initialize Database RAG
+        self.db_rag = DatabaseRAG(self.rag)
+
+        # Initialize Database Query Executor (will be created when API key is available)
+        self.db_query = None
+        self.active_database = None  # Store active database connection info
 
     def ensure_config_dir(self):
         """Create config directory if it doesn't exist"""
@@ -231,7 +240,17 @@ RAG Commands:
   /rag index <file>      Index a file or directory
   /rag collections       List available collections
   /rag search <query>    Search the knowledge base
+  /rag threshold <0-1>   Set similarity threshold (default: 0.2, lower=more results)
   /rag clear             Clear all indexed data
+  /rag db index <type> <connection> [options]
+                         Index a database (sqlite, postgresql, mysql)
+
+Database Query Commands:
+  /db connect <type> <connection>
+                         Connect to a database for querying
+  /db query <question>   Ask natural language questions about your database
+  /db status             Show active database connection
+  /db disconnect         Disconnect from database
 
 MCP Commands:
   /mcp list              List installed MCP servers
@@ -328,15 +347,26 @@ Other:
 
         elif subcmd == "search" and len(parts) >= 3:
             query = " ".join(parts[2:])
+
+            # Debug: Check what collections we're searching
+            stats = self.rag.get_stats()
+            print(f"\n🔍 Search Results for: '{query}'")
+            print(f"📚 Available collections: {list(stats['collections'].keys())}")
+            print(f"📊 Total chunks: {stats['total_chunks']}\n")
+
             results = self.rag.retrieve(query)
 
-            print(f"\n🔍 Search Results for: '{query}'\n")
             if results:
                 for i, (content, metadata, score) in enumerate(results, 1):
                     print(f"{i}. [Score: {score:.2f}] {metadata.get('source', 'Unknown')}")
+                    print(f"   Type: {metadata.get('type', 'unknown')}, Table: {metadata.get('table', 'unknown')}")
                     print(f"   {content[:200]}...\n")
             else:
-                print("No results found")
+                print("❌ No results found")
+                print("\nDebugging tips:")
+                print("  1. Check if data is indexed: /rag status")
+                print("  2. Try searching for specific table names")
+                print("  3. Check similarity threshold in RAG config")
 
         elif subcmd == "clear":
             confirm = input("Are you sure you want to clear all RAG data? (yes/no): ")
@@ -346,8 +376,31 @@ Other:
                 else:
                     print("✗ Failed to clear RAG data")
 
+        elif subcmd == "threshold" and len(parts) >= 3:
+            try:
+                new_threshold = float(parts[2])
+                if 0 <= new_threshold <= 1:
+                    self.rag.rag_config["similarity_threshold"] = new_threshold
+                    self.rag._save_rag_config()
+
+                    # Invalidate the database query executor so it uses the new threshold
+                    if self.db_query is not None:
+                        self.db_query = None
+                        print("✓ Database query executor reset to use new threshold")
+
+                    print(f"✓ Similarity threshold set to {new_threshold}")
+                    print(f"  Lower values = more permissive search")
+                    print(f"  Higher values = stricter search")
+                else:
+                    print("Error: Threshold must be between 0 and 1")
+            except ValueError:
+                print("Error: Invalid threshold value")
+
+        elif subcmd == "db":
+            self._handle_db_command(parts[2:] if len(parts) > 2 else [])
+
         else:
-            print("Usage: /rag [enable|disable|status|index|collections|search|clear]")
+            print("Usage: /rag [enable|disable|status|index|collections|search|clear|threshold|db]")
 
     def _index_path(self, path: Path, collection_name: str = "documents"):
         """Index a file or directory"""
@@ -378,11 +431,14 @@ Other:
                 print(f"Skipping unsupported file type: {file_path}")
                 return
 
+            from datetime import datetime
+
             metadata = {
                 "source": str(file_path),
                 "filename": file_path.name,
                 "type": suffix,
-                "indexed_at": str(Path.ctime(file_path))
+                "indexed_at": datetime.now().isoformat(),
+                "file_modified": datetime.fromtimestamp(file_path.stat().st_mtime).isoformat()
             }
 
             if self.rag.index_document(collection_name, content, metadata):
@@ -392,6 +448,279 @@ Other:
 
         except Exception as e:
             print(f"  ✗ Error indexing {file_path}: {e}")
+
+    def _handle_db_command(self, args: List[str]):
+        """Handle database RAG commands"""
+        if not args or args[0] not in ['index']:
+            print("Usage: /rag db index <db_type> <connection_info> [options]")
+            print("\nDatabase types:")
+            print("  sqlite     - SQLite database (provide file path)")
+            print("  postgresql - PostgreSQL database (provide connection string)")
+            print("  mysql      - MySQL database (provide connection string)")
+            print("\nOptions:")
+            print("  --collection <name>    Collection name (default: 'database')")
+            print("  --tables <t1,t2,...>   Specific tables to index (default: all)")
+            print("  --sample-data          Include sample data rows")
+            print("  --sample-rows <N>      Number of sample rows (default: 5)")
+            print("\nExamples:")
+            print("  /rag db index sqlite ~/company.db")
+            print("  /rag db index postgresql postgresql://user:pass@localhost/mydb --sample-data")
+            print("  /rag db index mysql mysql://user:pass@localhost/mydb --tables users,orders")
+            return
+
+        subcmd = args[0]
+
+        if subcmd == "index":
+            if len(args) < 3:
+                print("Error: Missing database type and connection info")
+                print("Usage: /rag db index <db_type> <connection_info> [options]")
+                return
+
+            db_type = args[1].lower()
+            connection_info = args[2]
+
+            # Parse options
+            collection_name = "database"
+            tables = None
+            include_sample_data = False
+            sample_rows = 5
+
+            i = 3
+            while i < len(args):
+                if args[i] == '--collection' and i + 1 < len(args):
+                    collection_name = args[i + 1]
+                    i += 2
+                elif args[i] == '--tables' and i + 1 < len(args):
+                    tables = args[i + 1].split(',')
+                    i += 2
+                elif args[i] == '--sample-data':
+                    include_sample_data = True
+                    i += 1
+                elif args[i] == '--sample-rows' and i + 1 < len(args):
+                    sample_rows = int(args[i + 1])
+                    i += 2
+                else:
+                    print(f"Warning: Unknown option '{args[i]}'")
+                    i += 1
+
+            # Expand user path for sqlite
+            if db_type == 'sqlite':
+                connection_info = str(Path(connection_info).expanduser())
+
+                if not Path(connection_info).exists():
+                    print(f"Error: SQLite database not found: {connection_info}")
+                    return
+
+            # Index the database
+            print(f"\n🔄 Indexing {db_type} database...")
+            print(f"   Connection: {connection_info}")
+            print(f"   Collection: {collection_name}")
+            if tables:
+                print(f"   Tables: {', '.join(tables)}")
+            else:
+                print(f"   Tables: All")
+            print(f"   Sample data: {'Yes' if include_sample_data else 'No'}")
+            print()
+
+            try:
+                if db_type == 'sqlite':
+                    stats = self.db_rag.index_sqlite_database(
+                        db_path=connection_info,
+                        collection_name=collection_name,
+                        tables=tables,
+                        include_sample_data=include_sample_data,
+                        sample_rows=sample_rows
+                    )
+                elif db_type == 'postgresql':
+                    stats = self.db_rag.index_postgres_database(
+                        connection_string=connection_info,
+                        collection_name=collection_name,
+                        tables=tables,
+                        include_sample_data=include_sample_data,
+                        sample_rows=sample_rows
+                    )
+                elif db_type == 'mysql':
+                    stats = self.db_rag.index_mysql_database(
+                        connection_string=connection_info,
+                        collection_name=collection_name,
+                        tables=tables,
+                        include_sample_data=include_sample_data,
+                        sample_rows=sample_rows
+                    )
+                else:
+                    print(f"Error: Unsupported database type '{db_type}'")
+                    print("Supported types: sqlite, postgresql, mysql")
+                    return
+
+                # Display results
+                print("\n✅ Database indexing complete!")
+                print(f"\n📊 Statistics:")
+                print(f"   Database type: {stats['database_type']}")
+                print(f"   Collection: {stats['collection']}")
+                print(f"   Tables indexed: {stats['tables_indexed']}")
+                print(f"   Schemas indexed: {stats['schemas_indexed']}")
+                if include_sample_data:
+                    print(f"   Sample data rows: {stats['sample_data_rows']}")
+
+                if stats.get('errors'):
+                    print(f"\n⚠️  Errors encountered:")
+                    for error in stats['errors']:
+                        print(f"   • {error}")
+
+            except ImportError as e:
+                print(f"\n❌ Missing dependency: {e}")
+            except Exception as e:
+                print(f"\n❌ Error indexing database: {e}")
+                import traceback
+                traceback.print_exc()
+
+    def _ensure_db_query_executor(self):
+        """Ensure DatabaseQueryExecutor is initialized"""
+        if self.db_query is None:
+            if not self.config.get("api_key"):
+                print("Error: API key not set. Database queries require Claude API access.")
+                print("Set it with: /config apikey YOUR_KEY")
+                return False
+
+            client = anthropic.Anthropic(api_key=self.config["api_key"])
+            self.db_query = DatabaseQueryExecutor(self.rag, client, self.config)
+        return True
+
+    def _handle_db_query_command(self, args: List[str]):
+        """Handle /db query commands for natural language database queries"""
+        if not args:
+            print("Usage: /db [connect|query|disconnect|status]")
+            print("\nCommands:")
+            print("  /db connect <type> <connection>")
+            print("      Connect to a database for querying")
+            print("      Example: /db connect sqlite ~/company.db")
+            print()
+            print("  /db query <question>")
+            print("      Ask a natural language question about your database")
+            print("      Example: /db query how many customers do we have?")
+            print()
+            print("  /db status")
+            print("      Show active database connection")
+            print()
+            print("  /db disconnect")
+            print("      Disconnect from current database")
+            return
+
+        subcmd = args[0].lower()
+
+        if subcmd == "connect":
+            if len(args) < 3:
+                print("Error: Missing database type and connection info")
+                print("Usage: /db connect <type> <connection>")
+                print("Example: /db connect sqlite ~/company.db")
+                return
+
+            db_type = args[1].lower()
+            connection_info = args[2]
+
+            # Expand user path for sqlite
+            if db_type == "sqlite":
+                connection_info = str(Path(connection_info).expanduser())
+                if not Path(connection_info).exists():
+                    print(f"Error: SQLite database not found: {connection_info}")
+                    return
+
+            self.active_database = {
+                "type": db_type,
+                "connection": connection_info
+            }
+
+            print(f"✓ Connected to {db_type} database")
+            print(f"  Connection: {connection_info}")
+            print("\nYou can now query this database with: /db query <your question>")
+
+        elif subcmd == "query":
+            if not self.active_database:
+                print("Error: No database connected")
+                print("Connect first with: /db connect <type> <connection>")
+                return
+
+            if len(args) < 2:
+                print("Error: Missing query question")
+                print("Usage: /db query <your question>")
+                return
+
+            if not self._ensure_db_query_executor():
+                return
+
+            question = " ".join(args[1:])
+
+            print(f"\n🔍 Question: {question}")
+            print(f"📊 Database: {self.active_database['type']} at {self.active_database['connection']}")
+            print("\n" + "="*60)
+
+            try:
+                # Execute natural language query
+                result = self.db_query.query(
+                    question=question,
+                    db_type=self.active_database["type"],
+                    connection_info=self.active_database["connection"],
+                    collection_name="database",
+                    explain=True
+                )
+
+                if result.get("error"):
+                    print(f"\n❌ Error: {result['error']}")
+                    return
+
+                # Show SQL query
+                print(f"\n💡 Generated SQL:")
+                print(f"   {result['sql_query']}")
+
+                # Show results count
+                print(f"\n📈 Results: {len(result['results'])} row(s)")
+
+                # Show results (limited for readability)
+                if result['results']:
+                    print("\n📋 Data:")
+                    max_display = 10
+                    for i, row in enumerate(result['results'][:max_display], 1):
+                        print(f"\n   Row {i}:")
+                        for col, val in row.items():
+                            print(f"      {col}: {val}")
+
+                    if len(result['results']) > max_display:
+                        print(f"\n   ... and {len(result['results']) - max_display} more rows")
+
+                # Show insights
+                print("\n" + "="*60)
+                print("\n🤖 Insights:\n")
+                print(result['insights'])
+                print("\n" + "="*60)
+
+                # Show sources used
+                if result.get('sources'):
+                    print(f"\n📚 Used {len(result['sources'])} schema sources from knowledge base")
+
+            except Exception as e:
+                print(f"\n❌ Error executing query: {e}")
+                import traceback
+                traceback.print_exc()
+
+        elif subcmd == "status":
+            if self.active_database:
+                print(f"✓ Connected to {self.active_database['type']} database")
+                print(f"  Connection: {self.active_database['connection']}")
+            else:
+                print("✗ No database connected")
+                print("Connect with: /db connect <type> <connection>")
+
+        elif subcmd == "disconnect":
+            if self.active_database:
+                db_info = self.active_database
+                self.active_database = None
+                print(f"✓ Disconnected from {db_info['type']} database")
+            else:
+                print("No database connected")
+
+        else:
+            print(f"Unknown subcommand: {subcmd}")
+            print("Usage: /db [connect|query|disconnect|status]")
 
     def interactive_mode(self):
         """Run Aalap in interactive mode"""
@@ -500,6 +829,9 @@ Type /exit or /quit to leave
 
                         else:
                             print("Usage: /mcp [list | install <name> <cmd> | remove <name>]")
+
+                    elif cmd == 'db':
+                        self._handle_db_query_command(parts[1:] if len(parts) > 1 else [])
 
                     else:
                         print(f"Unknown command: /{cmd}. Type /help for available commands.")
